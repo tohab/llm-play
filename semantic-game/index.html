@@ -10,15 +10,23 @@
     <div class="chat-container">
         <div class="chat-header">
             <h1>DeepSeek Chatbot</h1>
-            <div class="controls">
-                <button onclick="clearChat()">Clear Chat</button>
+        <div class="game-setup">
+            <div class="setup-controls">
+                <input type="text" id="seed-input" placeholder="Enter a seed word...">
+                <select id="difficulty-select">
+                    <option value="easy">Easy</option>
+                    <option value="medium" selected>Medium</option>
+                    <option value="hard">Hard</option>
+                </select>
+                <button id="start-game-button">Start Game</button>
+            </div>
+            <div class="game-controls" style="display: none;">
+                <input type="text" id="guess-input" placeholder="Enter your guess...">
+                <button id="guess-button">Guess</button>
+                <button id="give-up-button">Give Up</button>
             </div>
         </div>
         <div class="chat-messages" id="chat-messages"></div>
-        <div class="chat-input">
-            <textarea id="user-input" placeholder="Type your message..."></textarea>
-            <button onclick="sendMessage()">Send</button>
-        </div>
     </div>
     <script src="script.js"></script>
 </body>
