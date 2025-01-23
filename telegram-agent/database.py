@@ -1,38 +1,80 @@
 import sqlite3
 from datetime import datetime
+from contextlib import contextmanager
+import logging
+
+logger = logging.getLogger(__name__)
 
 class NoteDatabase:
     def __init__(self, db_name='notes.db'):
-        self.conn = sqlite3.connect(db_name)
+        self.db_name = db_name
         self._create_table()
+        
+    @contextmanager
+    def _get_connection(self):
+        """Context manager for database connections"""
+        conn = sqlite3.connect(self.db_name)
+        conn.execute("PRAGMA journal_mode=WAL")
+        try:
+            yield conn
+            conn.commit()
+        except sqlite3.Error as e:
+            logger.error(f"Database error: {e}")
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
 
     def _create_table(self):
-        self.conn.execute('''
-            CREATE TABLE IF NOT EXISTS notes
-            (id INTEGER PRIMARY KEY, 
-             chat_id INTEGER, 
-             content TEXT,
-             created_at DATETIME)
-        ''')
-        self.conn.commit()
+        """Create notes table if it doesn't exist"""
+        with self._get_connection() as conn:
+            conn.execute('''
+                CREATE TABLE IF NOT EXISTS notes
+                (id INTEGER PRIMARY KEY, 
+                 chat_id INTEGER, 
+                 content TEXT,
+                 created_at DATETIME)
+            ''')
 
     async def add_note(self, chat_id, content):
-        self.conn.execute(
-            'INSERT INTO notes (chat_id, content, created_at) VALUES (?, ?, ?)',
-            (chat_id, content, datetime.now())
-        )
-        self.conn.commit()
+        """Add a new note with automatic retry on failure"""
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                with self._get_connection() as conn:
+                    conn.execute(
+                        'INSERT INTO notes (chat_id, content, created_at) VALUES (?, ?, ?)',
+                        (chat_id, content.strip(), datetime.now())
+                    )
+                    return True
+            except sqlite3.Error as e:
+                logger.warning(f"Failed to add note (attempt {attempt + 1}): {e}")
+                if attempt == max_retries - 1:
+                    raise
+        return False
 
     async def get_notes(self, chat_id, limit=10):
-        cursor = self.conn.execute(
-            '''SELECT content, created_at 
-               FROM notes 
-               WHERE chat_id = ? 
-               ORDER BY created_at DESC 
-               LIMIT ?''',
-            (chat_id, limit)
-        )
-        return cursor.fetchall()
+        """Get notes with connection pooling and error handling"""
+        try:
+            with self._get_connection() as conn:
+                cursor = conn.execute(
+                    '''SELECT content, created_at 
+                       FROM notes 
+                       WHERE chat_id = ? 
+                       ORDER BY created_at DESC 
+                       LIMIT ?''',
+                    (chat_id, limit)
+                )
+                return cursor.fetchall()
+        except sqlite3.Error as e:
+            logger.error(f"Error getting notes: {e}")
+            return []
 
-    def close(self):
-        self.conn.close()
+    def verify_connection(self):
+        """Verify database connection is working"""
+        try:
+            with self._get_connection() as conn:
+                conn.execute("SELECT 1")
+            return True
+        except sqlite3.Error:
+            return False

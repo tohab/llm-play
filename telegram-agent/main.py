@@ -1,10 +1,19 @@
 import os
 import asyncio
+import logging
+import re
 from dotenv import load_dotenv
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 from openai import AsyncOpenAI
 from database import NoteDatabase
+
+# Configure logging
+logging.basicConfig(
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=logging.INFO
+)
+logger = logging.getLogger(__name__)
 
 # Load environment variables
 load_dotenv()
@@ -27,8 +36,8 @@ Available commands:
 - /start: Initialize new conversation
 - /reset: Reset conversation history
 - /help: List available commands
-- /save: Save a note to memory
-- /notes: Show recent notes
+- /save <note>: Save a new note to memory (e.g., "Remember to buy milk")
+- /notes: Retrieve and display saved notes (e.g., "Show me my notes")
 
 When user input matches a command's purpose, execute it automatically."""
 }
@@ -64,78 +73,112 @@ async def save_note(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Please provide a note after the command\nExample: /save Buy milk tomorrow")
         return
     
-    await db.add_note(chat_id, note_text)
-    await update.message.reply_text("📝 Note saved successfully!")
+    try:
+        success = await db.add_note(chat_id, note_text)
+        if success:
+            await update.message.reply_text("📝 Note saved successfully!")
+        else:
+            await update.message.reply_text("⚠️ Failed to save note, please try again")
+    except Exception as e:
+        logger.error(f"Error saving note: {e}")
+        await update.message.reply_text("🚨 Error saving note, please try again")
 
 async def show_notes(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
-    notes = await db.get_notes(chat_id)
-    
-    if not notes:
-        await update.message.reply_text("No notes found. Start saving with /save")
-        return
-    
-    response = "📒 Your Recent Notes:\n\n"
-    for i, (content, timestamp) in enumerate(notes, 1):
-        response += f"{i}. {content}\n   ({timestamp})\n\n"
-    
-    await update.message.reply_text(response)
+    try:
+        notes = await db.get_notes(chat_id)
+        if not notes:
+            await update.message.reply_text("No notes found. Start saving with /save")
+            return
+        
+        response = "📒 Your Recent Notes:\n\n"
+        for i, (content, timestamp) in enumerate(notes, 1):
+            response += f"{i}. {content}\n   ({timestamp})\n\n"
+        
+        await update.message.reply_text(response)
+    except Exception as e:
+        logger.error(f"Error retrieving notes: {e}")
+        await update.message.reply_text("🚨 Error retrieving notes, please try again")
 
 async def interpret_command(user_input: str, update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
-    prompt = f"""Analyze this user input and determine if it matches any command purpose:
-User Input: {user_input}
+    prompt = f"""Analyze this user input and determine if it matches any command purpose.
+User Input: "{user_input}"
 
-Available Commands:
-- /start: Initialize new conversation
-- /reset: Reset conversation history
-- /help: List available commands
-- /save: Save a note to memory
-- /notes: Show recent notes
+Available Commands (with examples):
+- /start: ("start", "begin chat", "hello", "hi")
+- /reset: ("reset", "clear", "start over")
+- /help: ("help", "commands", "what can you do?")
+- /save: ("save note", "remember to...", "note this...", "please save this...")
+- /notes: ("show me my notes", "what notes do I have?", "retrieve my notes", "list notes")
 
-Respond with "True" if the input matches a command's purpose, otherwise "False"."""
+If the input is semantically similar to these examples, respond "True". Otherwise "False"."""
     
-    completion = await client.chat.completions.create(
-        model="deepseek-chat",
-        messages=[{"role": "user", "content": prompt}],
-        temperature=0.2
-    )
-    
-    if completion.choices[0].message.content.strip().lower() == "true":
-        # Determine which command to execute
-        command_prompt = f"""Which command should be executed for this input?
-User Input: {user_input}
-
-Available Commands:
-- /start: Initialize new conversation
-- /reset: Reset conversation history
-- /help: List available commands
-- /save: Save a note to memory
-- /notes: Show recent notes
-
-Respond ONLY with the command name (e.g. "/save")"""
-        
-        command_completion = await client.chat.completions.create(
+    try:
+        completion = await client.chat.completions.create(
             model="deepseek-chat",
-            messages=[{"role": "user", "content": command_prompt}],
+            messages=[{"role": "user", "content": prompt}],
             temperature=0.2
         )
-        
-        command = command_completion.choices[0].message.content.strip()
-        
-        if command == "/start":
-            await start(update, context)
-        elif command == "/reset":
-            await reset(update, context)
-        elif command == "/help":
-            await help(update, context)
-        elif command == "/save":
-            await save_note(update, context)
-        elif command == "/notes":
-            await show_notes(update, context)
-        
-        return True
-    
-    return False
+
+        # Check if the response contains "true" instead of exact match
+        result_str = completion.choices[0].message.content.strip().lower()
+        if "true" in result_str:
+            command_prompt = f"""Which command should be executed for this input?
+User Input: "{user_input}"
+
+Available Commands:
+- /start
+- /reset
+- /help
+- /save
+- /notes
+
+Respond ONLY with the command name (e.g. "/notes")."""
+            
+            command_completion = await client.chat.completions.create(
+                model="deepseek-chat",
+                messages=[{"role": "user", "content": command_prompt}],
+                temperature=0.2
+            )
+            
+            cmd_str = command_completion.choices[0].message.content.strip().lower()
+            if not cmd_str.startswith("/"):
+                cmd_str = "/" + cmd_str.lstrip("/")
+
+            chat_id = update.effective_chat.id
+            
+            if cmd_str == "/save":
+                note_text = re.sub(r'\b(remember|note:?)\b', '', user_input, flags=re.IGNORECASE).strip()
+                if not note_text:
+                    await update.message.reply_text("⚠️ Please provide a note to save")
+                    return True
+                
+                try:
+                    success = await db.add_note(chat_id, note_text)
+                    if success:
+                        await update.message.reply_text("📝 Note saved successfully!")
+                    else:
+                        await update.message.reply_text("⚠️ Failed to save note, please try again")
+                except Exception as e:
+                    logger.error(f"Error saving note: {e}")
+                    await update.message.reply_text("🚨 Error saving note, please try again")
+                return True
+            
+            handlers = {
+                "/start": start,
+                "/reset": reset,
+                "/help": help,
+                "/notes": show_notes
+            }
+            
+            if cmd_str in handlers:
+                await handlers[cmd_str](update, context)
+                return True
+            
+        return False
+    except Exception as e:
+        logger.error(f"Error in interpret_command: {e}")
+        return False
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
@@ -144,13 +187,35 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if chat_id not in conversations:
         conversations[chat_id] = [SYSTEM_MESSAGE]
 
-    # Check if input matches a command's purpose
+    # Database connection check
+    global db
+    if not db.verify_connection():
+        await update.message.reply_text("⚠️ Database connection issue, trying to reconnect...")
+        db = NoteDatabase()
+        if not db.verify_connection():
+            await update.message.reply_text("❌ Failed to reconnect to database")
+            return
+
+    # Try to interpret as command first
     command_executed = await interpret_command(user_input, update, context)
     if command_executed:
         return
 
-    conversations[chat_id].append({"role": "user", "content": user_input})
+    # Automatic note detection with regex
+    if re.search(r'\b(remember|note)\b', user_input.lower()):
+        note_text = re.sub(r'\b(remember|note:?)\b', '', user_input, flags=re.IGNORECASE).strip()
+        if note_text:
+            try:
+                success = await db.add_note(chat_id, note_text)
+                if success:
+                    await update.message.reply_text("📝 I've automatically saved this note for you!")
+                else:
+                    await update.message.reply_text("⚠️ Failed to save note automatically")
+            except Exception as e:
+                logger.error(f"Error auto-saving note: {e}")
+                await update.message.reply_text("🚨 Error saving note automatically")
 
+    conversations[chat_id].append({"role": "user", "content": user_input})
     try:
         await context.bot.send_chat_action(chat_id=chat_id, action="typing")
         completion = await client.chat.completions.create(
@@ -159,17 +224,15 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         full_response = completion.choices[0].message.content
 
-        max_length = 4000
-        response_parts = [full_response[i:i+max_length] for i in range(0, len(full_response), max_length)]
-
+        response_parts = [full_response[i:i+4000] for i in range(0, len(full_response), 4000)]
         for part in response_parts:
             await update.message.reply_text(part)
             await asyncio.sleep(0.5)
 
         conversations[chat_id].append({"role": "assistant", "content": full_response})
-
     except Exception as e:
-        await update.message.reply_text(f"🚨 Error: {str(e)}")
+        logger.error(f"Error in handle_message: {e}")
+        await update.message.reply_text("🚨 Error processing your request")
 
 async def handle_confirmation(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
@@ -182,17 +245,7 @@ async def handle_confirmation(update: Update, context: ContextTypes.DEFAULT_TYPE
     if user_input in ["yes", "y"]:
         command = context.user_data["pending_command"]
         del context.user_data["pending_command"]
-        
-        if command == "/start":
-            await start(update, context)
-        elif command == "/reset":
-            await reset(update, context)
-        elif command == "/help":
-            await help(update, context)
-        elif command == "/save":
-            await update.message.reply_text("Please send your note after the command\nExample: /save Important reminder")
-        elif command == "/notes":
-            await show_notes(update, context)
+        await globals()[command[1:]](update, context)
     else:
         await update.message.reply_text("Command cancelled")
         del context.user_data["pending_command"]
