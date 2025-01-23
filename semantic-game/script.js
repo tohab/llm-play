@@ -2,16 +2,12 @@ let conversationHistory = [];
 let currentSeedWord = '';
 let currentDifficulty = 'medium';
 
-// Initialize game setup controls
 document.addEventListener('DOMContentLoaded', () => {
-    // Setup event listeners
     document.getElementById('start-game-button').addEventListener('click', startGame);
     document.getElementById('guess-button').addEventListener('click', handleGuess);
     document.getElementById('give-up-button').addEventListener('click', handleGiveUp);
     document.getElementById('guess-input').addEventListener('keypress', function(e) {
-        if (e.key === 'Enter') {
-            handleGuess();
-        }
+        if (e.key === 'Enter') handleGuess();
     });
 });
 
@@ -24,13 +20,11 @@ async function startGame() {
         return;
     }
 
-    // Show loading state
     const startButton = document.getElementById('start-game-button');
     startButton.disabled = true;
     startButton.textContent = 'Starting...';
 
     try {
-        // Initialize game with seed word and difficulty
         const response = await fetch('http://localhost:5000/start-game', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -42,13 +36,11 @@ async function startGame() {
 
         if (!response.ok) throw new Error('Failed to start game');
 
-        // Update UI state
         currentSeedWord = seedInput;
         currentDifficulty = difficultySelect;
         document.querySelector('.setup-controls').style.display = 'none';
         document.querySelector('.game-controls').style.display = 'flex';
         
-        // Clear chat and start new game
         clearChat();
         appendMessage('bot', `Game started! Seed word: ${seedInput}, Difficulty: ${difficultySelect}`);
         appendMessage('bot', "Try to guess the word related to the seed!");
@@ -57,7 +49,6 @@ async function startGame() {
         console.error('Error:', error);
         appendMessage('bot', "Error starting game. Please try again.");
     } finally {
-        // Reset button state
         startButton.disabled = false;
         startButton.textContent = 'Start Game';
     }
@@ -89,17 +80,7 @@ async function sendGuess(guess) {
         const data = await response.json();
         const botContent = data.content;
         
-        // Update with parsed game data
-        const messageDiv = document.createElement('div');
-        messageDiv.className = 'message bot-message';
-        messageDiv.innerHTML = `
-            <div class="game-response">
-                <div class="percentage">Similarity: ${JSON.parse(botContent).percentage}%</div>
-                <div class="hint">Hint: ${JSON.parse(botContent).hint}</div>
-            </div>
-        `;
-        
-        document.getElementById('chat-messages').appendChild(messageDiv);
+        appendMessage('bot', botContent);
         conversationHistory.push({ role: 'assistant', content: botContent });
 
     } catch (error) {
@@ -136,7 +117,6 @@ function appendMessage(role, content) {
     const messageDiv = document.createElement('div');
     messageDiv.className = `message ${role}-message`;
     
-    // Game response formatting
     if (role === 'bot' && content.includes('{')) {
         try {
             const data = JSON.parse(content);
@@ -155,5 +135,11 @@ function appendMessage(role, content) {
     }
     
     messagesDiv.appendChild(messageDiv);
-    messagesDiv.scrollTop = messagesDiv.scrollHeight;
+    
+    requestAnimationFrame(() => {
+        messagesDiv.scrollTo({
+            top: messagesDiv.scrollHeight,
+            behavior: 'smooth'
+        });
+    });
 }
