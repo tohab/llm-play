@@ -1,13 +1,16 @@
 import os
+import asyncio
 from dotenv import load_dotenv
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 from openai import AsyncOpenAI
+from database import NoteDatabase
 
 # Load environment variables
 load_dotenv()
 
-# Initialize DeepSeek client
+# Initialize services
+db = NoteDatabase()
 client = AsyncOpenAI(
     api_key=os.getenv("DEEPSEEK_API_KEY"),
     base_url="https://api.deepseek.com"
@@ -17,54 +20,79 @@ SYSTEM_MESSAGE = {
     "role": "system",
     "content": """You are a helpful AI assistant. Your tasks include:
 1. Respond helpfully to user messages
-2. Interpret natural language commands and map them to available commands
-3. Suggest appropriate commands when user intent matches available commands
-4. Always respond in less than 50 words
+2. Automatically execute commands when user intent matches their purpose
+3. Always respond in less than 50 words
 
 Available commands:
 - /start: Initialize new conversation
 - /reset: Reset conversation history
 - /help: List available commands
+- /save: Save a note to memory
+- /notes: Show recent notes
 
-When user input matches a command's purpose, suggest the command and ask for confirmation."""
+When user input matches a command's purpose, execute it automatically."""
 }
 
-# Store conversations per chat
 conversations = {}
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Initialize a new conversation"""
     chat_id = update.effective_chat.id
     conversations[chat_id] = [SYSTEM_MESSAGE]
     await update.message.reply_text("Hello! I'm your AI assistant. How can I help you today?")
 
 async def reset(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Reset conversation history"""
     chat_id = update.effective_chat.id
     conversations[chat_id] = [SYSTEM_MESSAGE]
     await update.message.reply_text("Conversation reset. How can I assist you?")
 
 async def help(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Show available commands"""
     help_text = """
 Available commands:
 /start - Initialize new conversation
 /reset - Reset conversation history
+/save <note> - Save a new note
+/notes - Show recent notes
 /help - List all available commands
 """
     await update.message.reply_text(help_text)
 
-async def interpret_command(user_input: str) -> str | None:
-    """Use LLM to interpret natural language and suggest commands"""
-    prompt = f"""Analyze this user input and suggest the most appropriate command:
+async def save_note(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+    note_text = ' '.join(context.args)
+    
+    if not note_text:
+        await update.message.reply_text("Please provide a note after the command\nExample: /save Buy milk tomorrow")
+        return
+    
+    await db.add_note(chat_id, note_text)
+    await update.message.reply_text("📝 Note saved successfully!")
+
+async def show_notes(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+    notes = await db.get_notes(chat_id)
+    
+    if not notes:
+        await update.message.reply_text("No notes found. Start saving with /save")
+        return
+    
+    response = "📒 Your Recent Notes:\n\n"
+    for i, (content, timestamp) in enumerate(notes, 1):
+        response += f"{i}. {content}\n   ({timestamp})\n\n"
+    
+    await update.message.reply_text(response)
+
+async def interpret_command(user_input: str, update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
+    prompt = f"""Analyze this user input and determine if it matches any command purpose:
 User Input: {user_input}
 
 Available Commands:
 - /start: Initialize new conversation
 - /reset: Reset conversation history
 - /help: List available commands
+- /save: Save a note to memory
+- /notes: Show recent notes
 
-Respond ONLY with the command name if a match is found (e.g. "/reset"), or "None" if no match."""
+Respond with "True" if the input matches a command's purpose, otherwise "False"."""
     
     completion = await client.chat.completions.create(
         model="deepseek-chat",
@@ -72,58 +100,78 @@ Respond ONLY with the command name if a match is found (e.g. "/reset"), or "None
         temperature=0.2
     )
     
-    response = completion.choices[0].message.content.strip()
-    return response if response in ["/start", "/reset", "/help"] else None
+    if completion.choices[0].message.content.strip().lower() == "true":
+        # Determine which command to execute
+        command_prompt = f"""Which command should be executed for this input?
+User Input: {user_input}
+
+Available Commands:
+- /start: Initialize new conversation
+- /reset: Reset conversation history
+- /help: List available commands
+- /save: Save a note to memory
+- /notes: Show recent notes
+
+Respond ONLY with the command name (e.g. "/save")"""
+        
+        command_completion = await client.chat.completions.create(
+            model="deepseek-chat",
+            messages=[{"role": "user", "content": command_prompt}],
+            temperature=0.2
+        )
+        
+        command = command_completion.choices[0].message.content.strip()
+        
+        if command == "/start":
+            await start(update, context)
+        elif command == "/reset":
+            await reset(update, context)
+        elif command == "/help":
+            await help(update, context)
+        elif command == "/save":
+            await save_note(update, context)
+        elif command == "/notes":
+            await show_notes(update, context)
+        
+        return True
+    
+    return False
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     user_input = update.message.text
 
-    # Initialize conversation if new
     if chat_id not in conversations:
         conversations[chat_id] = [SYSTEM_MESSAGE]
 
-    # First check if message matches any commands
-    suggested_command = await interpret_command(user_input)
-    if suggested_command:
-        # Store pending command in context
-        context.user_data["pending_command"] = suggested_command
-        await update.message.reply_text(f"Do you want to run {suggested_command}? (yes/no)")
+    # Check if input matches a command's purpose
+    command_executed = await interpret_command(user_input, update, context)
+    if command_executed:
         return
 
-    # Add user message to history
     conversations[chat_id].append({"role": "user", "content": user_input})
 
     try:
-        # Show typing indicator
         await context.bot.send_chat_action(chat_id=chat_id, action="typing")
-
-        # Get complete response
         completion = await client.chat.completions.create(
             model="deepseek-chat",
             messages=conversations[chat_id]
         )
-
         full_response = completion.choices[0].message.content
 
-        # Split long responses into multiple messages
         max_length = 4000
         response_parts = [full_response[i:i+max_length] for i in range(0, len(full_response), max_length)]
 
-        # Send each part as a separate message
         for part in response_parts:
             await update.message.reply_text(part)
-            # Add slight delay between messages
             await asyncio.sleep(0.5)
 
-        # Save final response to history
         conversations[chat_id].append({"role": "assistant", "content": full_response})
 
     except Exception as e:
         await update.message.reply_text(f"🚨 Error: {str(e)}")
 
 async def handle_confirmation(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle yes/no responses for command confirmation"""
     chat_id = update.effective_chat.id
     user_input = update.message.text.lower()
     
@@ -133,28 +181,31 @@ async def handle_confirmation(update: Update, context: ContextTypes.DEFAULT_TYPE
         
     if user_input in ["yes", "y"]:
         command = context.user_data["pending_command"]
-        # Clear pending command
         del context.user_data["pending_command"]
         
-        # Execute the command
         if command == "/start":
             await start(update, context)
         elif command == "/reset":
             await reset(update, context)
         elif command == "/help":
             await help(update, context)
+        elif command == "/save":
+            await update.message.reply_text("Please send your note after the command\nExample: /save Important reminder")
+        elif command == "/notes":
+            await show_notes(update, context)
     else:
         await update.message.reply_text("Command cancelled")
         del context.user_data["pending_command"]
 
 def main():
-    # Create bot application
     application = Application.builder().token(os.getenv("TELEGRAM_TOKEN")).build()
 
-    # Add handlers
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("reset", reset))
     application.add_handler(CommandHandler("help", help))
+    application.add_handler(CommandHandler("save", save_note))
+    application.add_handler(CommandHandler("notes", show_notes))
+    
     application.add_handler(MessageHandler(
         filters.TEXT & ~filters.COMMAND,
         lambda update, context: (
@@ -164,9 +215,7 @@ def main():
         )
     ))
 
-    # Start polling
     application.run_polling()
 
 if __name__ == "__main__":
-    import asyncio
     main()
