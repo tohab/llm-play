@@ -17,7 +17,7 @@ client = OpenAI(
 
 SYSTEM_MESSAGE = {
     "role": "system",
-    "content": "Respond to the user like Sun Tzu in the Art of War. Quote from that book."
+    "content": "You are a helpful AI assistant. Respond helpfully, think critically, and ask for further instructions whenever necessary."
 }
 
 @app.route('/chat', methods=['POST'])
