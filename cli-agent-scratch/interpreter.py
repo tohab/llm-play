@@ -71,9 +71,25 @@ class Interpreter:
             return self._save_note(f"/save {user_input}")
         elif intent == "list_notes":
             return self._list_notes()
+        elif intent == "delete_notes":
+            return self._delete_notes(f"/delete {self._extract_delete_query(user_input)}")
             
         # Only use LLM for non-note related inputs
         return self._generate_response(user_input)
+
+    def _extract_delete_query(self, user_input: str) -> str:
+        """Extract the query portion from natural language delete requests"""
+        handler = llm_handler.LLMHandler()
+        prompt = f"""Extract the query portion from this delete request:
+        Input: {user_input}
+        
+        Examples:
+        - "delete notes about cats" → "cats"
+        - "get rid of all work-related notes" → "work"
+        - "remove notes containing meeting notes" → "meeting notes"
+        
+        Return only the extracted query:"""
+        return handler.generate_response(prompt).strip()
 
     def _classify_intent(self, user_input: str) -> str:
         """Classify user intent using LLM"""
@@ -84,9 +100,10 @@ class Interpreter:
         Possible intents:
         - save_note: User wants to save a note (phrases like: remember this, save this, make a note, jot this down)
         - list_notes: User wants to list all notes (phrases like: show notes, show me what you remember, what have we discussed, list my notes)
+        - delete_notes: User wants to delete notes (phrases like: delete X note, get rid of notes about X, remove notes containing Y, clear all notes about Z)
         - other: General conversation
         
-        Return only the intent name (save_note, list_notes, or other)"""
+        Return only the intent name (save_note, list_notes, delete_notes, or other)"""
         
         response = handler.generate_response(prompt)
         return response.strip().lower()
