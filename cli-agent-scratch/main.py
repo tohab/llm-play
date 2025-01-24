@@ -13,7 +13,7 @@ def main():
                 break
                 
             response = interpreter.handle_input(user_input)
-            print(f"Bot: {response}")/
+            print(f"Bot: {response}")
             
         except KeyboardInterrupt:
             print("\nGoodbye!")
