@@ -36,7 +36,7 @@ class NoteDatabase:
                  created_at DATETIME)
             ''')
 
-    async def add_note(self, chat_id, content):
+    def add_note(self, chat_id, content):
         """Add a new note with automatic retry on failure"""
         max_retries = 3
         for attempt in range(max_retries):
@@ -53,7 +53,7 @@ class NoteDatabase:
                     raise
         return False
 
-    async def get_notes(self, chat_id, limit=10):
+    def get_notes(self, chat_id, limit=10):
         """Get notes with connection pooling and error handling"""
         try:
             with self._get_connection() as conn:
@@ -79,7 +79,7 @@ class NoteDatabase:
         except sqlite3.Error:
             return False
 
-    async def get_all_notes(self, chat_id):
+    def get_all_notes(self, chat_id):
         """Get all notes for a chat"""
         try:
             with self._get_connection() as conn:
@@ -95,7 +95,7 @@ class NoteDatabase:
             logger.error(f"Error getting all notes: {e}")
             return []
 
-    async def delete_note(self, note_id):
+    def delete_note(self, note_id):
         """Delete a note by ID"""
         try:
             with self._get_connection() as conn:
@@ -108,7 +108,7 @@ class NoteDatabase:
             logger.error(f"Error deleting note: {e}")
             return False
 
-    async def update_note(self, note_id, new_content):
+    def update_note(self, note_id, new_content):
         """Update a note's content"""
         try:
             with self._get_connection() as conn:

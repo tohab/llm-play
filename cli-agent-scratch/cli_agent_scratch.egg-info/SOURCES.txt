@@ -1,0 +1,5 @@
+setup.py
+cli_agent_scratch.egg-info/PKG-INFO
+cli_agent_scratch.egg-info/SOURCES.txt
+cli_agent_scratch.egg-info/dependency_links.txt
+cli_agent_scratch.egg-info/top_level.txt
