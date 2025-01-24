@@ -8,9 +8,16 @@ class LLMHandler:
             api_key=os.getenv("DEEPSEEK_API_KEY"),
             base_url="https://api.deepseek.com"
         )
+        self.command_prefixes = ['/help', '/save', '/list']
         self.system_message = {
             "role": "system",
-            "content": "You are a helpful AI assistant. Respond helpfully, think critically, and ask for further instructions whenever necessary."
+            "content": """You are a helpful AI assistant that helps users manage their notes. 
+            Your responsibilities include:
+            - Determining if the user wants to save a note or list their notes
+            - Helping users organize their thoughts
+            - Responding helpfully to general questions
+            
+            When the user wants to save a note, extract just the note content without any additional commentary."""
         }
 
     def generate_response(self, prompt: str, stream: bool = False) -> str | Generator:
