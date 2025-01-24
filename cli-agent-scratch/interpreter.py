@@ -39,6 +39,17 @@ class Interpreter:
 
     def handle_input(self, user_input: str) -> str:
         """Process user input and return appropriate response"""
+        # Handle confirmation responses first
+        if user_input.lower() in ('yes', 'no'):
+            if hasattr(self, '_pending_delete_ids'):
+                if user_input.lower() == 'yes':
+                    result = self._confirm_delete(self._pending_delete_ids)
+                    del self._pending_delete_ids
+                    return result
+                else:
+                    del self._pending_delete_ids
+                    return "Delete cancelled"
+        
         # Check for commands first
         if user_input.startswith('/'):
             if user_input.startswith('/save'):
@@ -46,9 +57,11 @@ class Interpreter:
             elif user_input.startswith('/list'):
                 return self._list_notes()
             elif user_input.startswith('/help'):
-                return "Available commands:\n/save [note] - Save a note\n/list - List all notes\n/categories - List all categories"
+                return "Available commands:\n/save [note] - Save a note\n/list - List all notes\n/categories - List all categories\n/delete [query] - Delete notes matching query"
             elif user_input.startswith('/categories'):
                 return self._list_categories()
+            elif user_input.startswith('/delete'):
+                return self._delete_notes(user_input)
             else:
                 return "Unknown command. Type /help for available commands"
             
@@ -180,6 +193,57 @@ class Interpreter:
         """Generate response using LLM"""
         handler = llm_handler.LLMHandler()
         return handler.generate_response(input_text)
+
+    def _delete_notes(self, input_text: str) -> str:
+        """Delete notes matching the given query after confirmation"""
+        query = input_text[len("/delete"):].strip()
+        if not query:
+            return "Error: No query provided after /delete"
+
+        # Find matching notes
+        cursor = self.conn.cursor()
+        cursor.execute("SELECT id, content FROM notes")
+        all_notes = cursor.fetchall()
+        
+        # Use LLM to find relevant notes
+        handler = llm_handler.LLMHandler()
+        prompt = f"""Given these notes and a query, return only the IDs of notes that should be deleted:
+        Query: {query}
+        Notes:
+        {all_notes}
+        
+        Return only a comma-separated list of IDs to delete, or 'none' if no matches found"""
+        
+        response = handler.generate_response(prompt).strip()
+        if response.lower() == 'none':
+            return "No matching notes found"
+            
+        try:
+            self._pending_delete_ids = [int(id_str) for id_str in response.split(',')]
+        except ValueError:
+            return "Error: Invalid response from LLM"
+            
+        # Get note contents for confirmation
+        cursor.execute("SELECT id, content FROM notes WHERE id IN ({})".format(
+            ','.join('?' for _ in self._pending_delete_ids)), self._pending_delete_ids)
+        matching_notes = cursor.fetchall()
+        
+        if not matching_notes:
+            return "No matching notes found"
+            
+        # Show confirmation prompt
+        notes_list = "\n".join(f"- {content}" for _, content in matching_notes)
+        return f"Do you want to delete these notes?\n{notes_list}\n\nType 'yes' to confirm or 'no' to cancel"
+
+    def _confirm_delete(self, note_ids: list[int]) -> str:
+        """Actually delete the notes after confirmation"""
+        cursor = self.conn.cursor()
+        cursor.execute("DELETE FROM notes WHERE id IN ({})".format(
+            ','.join('?' for _ in note_ids)), note_ids)
+        cursor.execute("DELETE FROM note_category WHERE note_id IN ({})".format(
+            ','.join('?' for _ in note_ids)), note_ids)
+        self.conn.commit()
+        return f"Deleted {len(note_ids)} notes"
 
     def _list_categories(self) -> str:
         """List all categories and their note counts"""
