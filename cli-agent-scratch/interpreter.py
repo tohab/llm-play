@@ -14,6 +14,7 @@ class Interpreter:
             CREATE TABLE IF NOT EXISTS notes (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 content TEXT NOT NULL,
+                formatted_content TEXT NOT NULL,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
@@ -95,32 +96,41 @@ class Interpreter:
         Return only the category name:"""
         return handler.generate_response(prompt).strip()
 
+    def _format_note(self, note_content: str) -> str:
+        """Format note content to improve grammar, spelling and cohesion"""
+        handler = llm_handler.LLMHandler()
+        prompt = f"""Please format this note to improve its grammar, spelling and cohesion:
+        {note_content}
+        
+        Rules:
+        - Fix any spelling and grammar errors
+        - Make sentences more clear and concise
+        - Maintain the original meaning
+        - Keep the same overall structure
+        - Return only the formatted note"""
+        return handler.generate_response(prompt).strip()
+
     def _save_note(self, input_text: str) -> str:
         """Save note to database with automatic categorization"""
         note_content = input_text[len("/save"):].strip()
         if not note_content:
             return "Error: No content provided after /save"
 
-        # Use LLM to process and clean up the note
-        handler = llm_handler.LLMHandler()
-        prompt = f"""Please process this note to make it more coherent and organized:
-        - Remove unnecessary filler words
-        - Fix grammar and punctuation
-        - Make it concise but preserve meaning
-        - Format lists and bullet points consistently
-        
-        Original note: {note_content}
-        
-        Return only the cleaned up note content:"""
-        
-        processed_note = handler.generate_response(prompt).strip()
+        # Store note as plain text without formatting
+        processed_note = note_content.strip()
         
         # Get category and save note
         category = self._get_category_for_note(processed_note)
         cursor = self.conn.cursor()
         
-        # Save note
-        cursor.execute("INSERT INTO notes (content) VALUES (?)", (processed_note,))
+        # Format note
+        formatted_note = self._format_note(processed_note)
+        
+        # Save note with both raw and formatted content
+        cursor.execute("""
+            INSERT INTO notes (content, formatted_content) 
+            VALUES (?, ?)
+        """, (processed_note, formatted_note))
         note_id = cursor.lastrowid
         
         # Save category
@@ -136,22 +146,35 @@ class Interpreter:
         return f"Note saved in category '{category}': {processed_note}"
 
     def _list_notes(self) -> str:
-        """List all notes with their categories"""
+        """List all notes sorted by category"""
         cursor = self.conn.cursor()
         cursor.execute("""
-            SELECT n.content, c.name 
+            SELECT c.name, n.content
             FROM notes n
             JOIN note_category nc ON n.id = nc.note_id
             JOIN categories c ON nc.category_id = c.id
-            ORDER BY n.created_at DESC
+            ORDER BY c.name ASC, n.created_at DESC
         """)
         notes = cursor.fetchall()
         
         if not notes:
             return "No notes found"
             
-        return "\n".join(f"- [{category}] {content}" 
-                        for content, category in notes)
+        # Group notes by category
+        categorized_notes = {}
+        for category, content in notes:
+            if category not in categorized_notes:
+                categorized_notes[category] = []
+            categorized_notes[category].append(content)
+            
+        # Format output with category headings
+        output = []
+        for category, contents in sorted(categorized_notes.items()):
+            output.append(f"[{category}]")
+            output.extend(f"- {content}" for content in contents)
+            output.append("")  # Add blank line between categories
+            
+        return "\n".join(output)
 
     def _generate_response(self, input_text: str) -> str:
         """Generate response using LLM"""
