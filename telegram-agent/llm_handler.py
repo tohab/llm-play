@@ -49,9 +49,16 @@ async def handle_message(update, context):
         note_text = re.sub(r'\b(remember|note:?)\b', '', user_input, flags=re.IGNORECASE).strip()
         if note_text:
             try:
-                success = await db.add_note(chat_id, note_text)
-                if success:
-                    await update.message.reply_text("📝 I've automatically saved this note for you!")
+                # Save note and get its ID
+                note_id = await db.add_note(chat_id, note_text)
+                if note_id:
+                    # Automatically categorize the note
+                    categories = await categorize_note(context.bot_data['client'], note_text)
+                    if categories:
+                        await db.categorize_note(note_id, categories)
+                        await update.message.reply_text(f"📝 I've saved this note under categories: {', '.join(categories)}")
+                    else:
+                        await update.message.reply_text("📝 I've saved this note but couldn't determine categories")
                 else:
                     await update.message.reply_text("⚠️ Failed to save note automatically")
             except Exception as e:
@@ -106,14 +113,30 @@ Return ONLY a comma-separated list of IDs, nothing else. If no notes are related
         
         completion = await client.chat.completions.create(
             model="deepseek-chat",
+        return [int(id.strip()) for id in result.split(",")]
+    except Exception as e:
+        logger.error(f"Error finding related notes: {e}")
+        return []
+
+async def categorize_note(client, note_content):
+    """Use LLM to generate categories for a note"""
+    try:
+        prompt = f"""Analyze this note and suggest 1-3 relevant categories. 
+Return ONLY a comma-separated list of category names, nothing else.
+
+Note content:
+{note_content}
+
+Categories:"""
+        
+        completion = await client.chat.completions.create(
+            model="deepseek-chat",
             messages=[{"role": "user", "content": prompt}],
             temperature=0.2
         )
         
         result = completion.choices[0].message.content.strip()
-        if result.lower() == "none":
-            return []
-        return [int(id.strip()) for id in result.split(",")]
+        return [cat.strip().lower() for cat in result.split(",")]
     except Exception as e:
-        logger.error(f"Error finding related notes: {e}")
+        logger.error(f"Error categorizing note: {e}")
         return []
